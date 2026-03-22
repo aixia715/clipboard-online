@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/YanxinTang/clipboard-online/utils"
@@ -495,6 +496,7 @@ func decodeHEIFWithExtern(fileBytes []byte, filename string) (image.Image, error
 
 	// 调用 heif_converter.exe 进行转换
 	cmd := exec.Command(heifExePath, tempInputPath, tempOutputPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
 	// 捕获 stderr 用于错误记录
 	var stderr bytes.Buffer

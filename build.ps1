@@ -54,15 +54,12 @@ function build_heif_converter() {
 
     Write-Output "  Building heif_converter.exe..."
     
-    # 检查 PyInstaller
-    $pyinstaller_check = python -c "import PyInstaller; print('OK')" 2>&1
-    if ($pyinstaller_check -ne "OK") {
-        Write-Output "    Installing PyInstaller..."
-        python -m pip install pyinstaller -q
-    }
+    # 安装依赖
+    Write-Output "    Checking dependencies..."
+    python -m pip install pillow pillow-heif pyinstaller -q 2>&1 | Out-Null
     
     # 编译
-    python -m PyInstaller --onefile --console --name heif_converter --noupx --distpath "${RELEASE_DIR}" --workpath "${ROOT}\.build" --specpath "${ROOT}\.build" $heif_converter_py 2>&1 | Out-Null
+    python -m PyInstaller --onefile --console --name heif_converter --noupx --hidden-import=pillow_heif --hidden-import=PIL --distpath "${RELEASE_DIR}" --workpath "${ROOT}\.build" --specpath "${ROOT}\.build" $heif_converter_py 2>&1 | Out-Null
     
     if (Test-Path $heif_converter_exe) {
         Write-Output "  ✓ heif_converter.exe created: $(Get-Item $heif_converter_exe | Select-Object -ExpandProperty Length) bytes"

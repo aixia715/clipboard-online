@@ -62,16 +62,13 @@ function build_heif_converter() {
     echo "  Building heif_converter.exe..."
     python_cmd=$(get_python_cmd)
     
-    # 检查 PyInstaller
-    $python_cmd -c "import PyInstaller" 2>/dev/null
-    if [[ $? -ne 0 ]]; then
-        echo "    Installing PyInstaller..."
-        $python_cmd -m pip install pyinstaller -q
-    fi
+    # 安装依赖
+    echo "    Checking dependencies..."
+    $python_cmd -m pip install pillow pillow-heif pyinstaller -q 2>/dev/null
     
     # 编译（Windows 特定）
     if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
-        $python_cmd -m PyInstaller --onefile --console --name heif_converter --noupx --distpath "$RELEASE_DIR" --workpath "$ROOT/.build" --specpath "$ROOT/.build" "$heif_converter_py" 2>&1 >/dev/null
+        $python_cmd -m PyInstaller --onefile --console --name heif_converter --noupx --hidden-import=pillow_heif --hidden-import=PIL --distpath "$RELEASE_DIR" --workpath "$ROOT/.build" --specpath "$ROOT/.build" "$heif_converter_py" 2>&1 >/dev/null
         
         if [[ -f "$heif_converter_exe" ]]; then
             size=$(stat -f%z "$heif_converter_exe" 2>/dev/null || stat -c%s "$heif_converter_exe" 2>/dev/null || echo "?")

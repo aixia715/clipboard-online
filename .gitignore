@@ -11,3 +11,4 @@ test_input.heic
 test_output.jpg
 test_output.png
 .venv/
+.build/
