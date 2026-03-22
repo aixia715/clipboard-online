@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -262,6 +263,14 @@ func setTextHandler(c *gin.Context) {
 		return
 	}
 
+	// 检测文本中是否包含 HTTP/HTTPS 链接
+	if link := extractFirstURL(body.Text); link != "" {
+		log.WithField("link", link).Info("detected URL in clipboard text")
+		go showToastAndOpenURL(link)
+		c.Status(http.StatusOK)
+		return
+	}
+
 	var notify string = "粘贴内容为空"
 	if body.Text != "" {
 		notify = body.Text
@@ -485,6 +494,38 @@ func cleanTempFiles() {
 				log.WithError(err).WithField("delPath", delPath).Warn("failed to delete specify path")
 			}
 		}
+	}
+}
+
+// extractFirstURL 从文本中提取第一个 HTTP/HTTPS 链接
+var urlPattern = regexp.MustCompile(`https?://[^\s<>"{}|\\^` + "`" + `\[\]]+`)
+
+func extractFirstURL(text string) string {
+	return urlPattern.FindString(text)
+}
+
+// showToastAndOpenURL 弹出 Toast 通知询问用户是否打开链接
+func showToastAndOpenURL(link string) {
+	toastExePath := filepath.Join(execPath, "toast_notifier.exe")
+	if _, err := os.Stat(toastExePath); err != nil {
+		log.WithError(err).Warn("toast_notifier.exe not found, skipping link notification")
+		return
+	}
+
+	message := fmt.Sprintf("检测到链接: %s\n是否跳转？", link)
+	cmd := exec.Command(toastExePath, "文本包含链接", message)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+	if err := cmd.Run(); err != nil {
+		log.Info("user chose not to open URL")
+		return
+	}
+
+	// 用户选择"是"，打开链接
+	openCmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", link)
+	openCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := openCmd.Start(); err != nil {
+		log.WithError(err).WithField("link", link).Warn("failed to open URL")
 	}
 }
 
