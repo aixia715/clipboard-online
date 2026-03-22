@@ -7,8 +7,11 @@ bin/
 dist/
 heif_converter.exe
 heif_converter.spec
+toast_notifier.exe
+toast_notifier.spec
 test_input.heic
 test_output.jpg
 test_output.png
 .venv/
 .build/
+__pycache__/

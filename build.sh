@@ -11,6 +11,8 @@ version=$(if [[ $(git describe --exact-match 2>/dev/null) != "" ]]; then git des
 output="$RELEASE_DIR/$prog.exe"
 heif_converter_exe="$RELEASE_DIR/heif_converter.exe"
 heif_converter_py="$ROOT/heif_converter.py"
+toast_notifier_exe="$RELEASE_DIR/toast_notifier.exe"
+toast_notifier_py="$ROOT/toast_notifier.py"
 mode="release"
 
 while getopts "hdv:" arg; do
@@ -30,7 +32,7 @@ while getopts "hdv:" arg; do
 done
 
 function check_python_env() {
-    echo "[2/4] Checking Python environment..."
+    echo "[2/5] Checking Python environment..."
     if command -v python3 &> /dev/null; then
         python_ver=$(python3 --version 2>&1)
         echo "  ✓ Python found: $python_ver"
@@ -40,7 +42,7 @@ function check_python_env() {
         echo "  ✓ Python found: $python_ver"
         return 0
     else
-        echo "  ⚠ Python not found. HEIF support will be disabled."
+        echo "  ⚠ Python not found. HEIF and Toast support will be disabled."
         return 1
     fi
 }
@@ -84,8 +86,39 @@ function build_heif_converter() {
     fi
 }
 
+function build_toast_notifier() {
+    if [[ ! -f "$toast_notifier_py" ]]; then
+        echo "  ⚠ toast_notifier.py not found, skipping Toast notifier build"
+        return 1
+    fi
+    
+    echo "  Building toast_notifier.exe..."
+    python_cmd=$(get_python_cmd)
+    
+    # 安装依赖
+    echo "    Checking dependencies..."
+    $python_cmd -m pip install windows-toasts pyinstaller -q 2>/dev/null
+    
+    # 编译（Windows 特定）
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+        $python_cmd -m PyInstaller --onefile --console --name toast_notifier --noupx --hidden-import=windows_toasts --hidden-import=winsdk --distpath "$RELEASE_DIR" --workpath "$ROOT/.build" --specpath "$ROOT/.build" "$toast_notifier_py" 2>&1 >/dev/null
+        
+        if [[ -f "$toast_notifier_exe" ]]; then
+            size=$(stat -f%z "$toast_notifier_exe" 2>/dev/null || stat -c%s "$toast_notifier_exe" 2>/dev/null || echo "?")
+            echo "  ✓ toast_notifier.exe created: $size bytes"
+            return 0
+        else
+            echo "  ✗ Failed to create toast_notifier.exe"
+            return 1
+        fi
+    else
+        echo "  ⚠ Skipping Toast notifier build (Windows-only tool)"
+        return 1
+    fi
+}
+
 function build_go_program() {
-    echo "[3/4] Building Go program..."
+    echo "[4/5] Building Go program..."
     $ENV_GOAPTH/bin/rsrc.exe -manifest clipboard-online.manifest -ico app.ico -o rsrc.syso 2>/dev/null || true
     
     if [[ "$mode" == "debug" ]]; then
@@ -106,9 +139,10 @@ function build_release() {
 }
 
 function cleanup() {
-    echo "[4/4] Cleaning up..."
+    echo "[5/5] Cleaning up..."
     rm -rf "$ROOT/.build" "$ROOT/build" "$ROOT/rsrc.syso" "$ROOT/__pycache__"
     rm -f "$ROOT/heif_converter.exe"
+    rm -f "$ROOT/toast_notifier.exe"
     echo "  ✓ Cleaned up intermediate files"
 }
 
@@ -132,6 +166,13 @@ function verify_build() {
         echo "⚠ heif_converter.exe: OPTIONAL (HEIF support disabled)"
     fi
     
+    if [[ -f "$RELEASE_DIR/toast_notifier.exe" ]]; then
+        size=$(stat -f%z "$RELEASE_DIR/toast_notifier.exe" 2>/dev/null || stat -c%s "$RELEASE_DIR/toast_notifier.exe" 2>/dev/null || echo "?")
+        echo "✓ toast_notifier.exe: $size bytes"
+    else
+        echo "⚠ toast_notifier.exe: OPTIONAL (Toast notification disabled)"
+    fi
+    
     echo ""
     echo "Release directory: $RELEASE_DIR"
     echo "Ready to run: ./release/clipboard-online.exe"
@@ -149,8 +190,8 @@ function main() {
     echo "[1/4] Preparing environment..."
     
     if check_python_env; then
-        build_heif_converter
-    else
+        build_heif_converter        echo "[3/5] Building Toast notifier..."
+        build_toast_notifier    else
         echo ""
     fi
     

@@ -17,6 +17,8 @@ $ENV_GOAPTH = $(go env GOPATH)
 $output = "${RELEASE_DIR}/${prog}.exe"
 $heif_converter_exe = "${RELEASE_DIR}\heif_converter.exe"
 $heif_converter_py = "${ROOT}\heif_converter.py"
+$toast_notifier_exe = "${RELEASE_DIR}\toast_notifier.exe"
+$toast_notifier_py = "${ROOT}\toast_notifier.py"
 $mode = "release"
 
 if ($version -eq "") {
@@ -34,14 +36,14 @@ if ($debug) {
 }
 
 function check_python_env() {
-    Write-Output "[1/4] Checking Python environment..."
+    Write-Output "[1/5] Checking Python environment..."
     try {
         $python = python --version 2>&1
         Write-Output "  ✓ Python found: $python"
         return $true
     }
     catch {
-        Write-Output "  ⚠ Python not found in PATH. HEIF support will be disabled."
+        Write-Output "  ⚠ Python not found in PATH. HEIF and Toast support will be disabled."
         return $false
     }
 }
@@ -71,8 +73,33 @@ function build_heif_converter() {
     }
 }
 
+function build_toast_notifier() {
+    if (-not (Test-Path $toast_notifier_py)) {
+        Write-Output "  ⚠ toast_notifier.py not found, skipping Toast notifier build"
+        return $false
+    }
+
+    Write-Output "  Building toast_notifier.exe..."
+    
+    # 安装依赖
+    Write-Output "    Checking dependencies..."
+    python -m pip install windows-toasts pyinstaller -q 2>&1 | Out-Null
+    
+    # 编译
+    python -m PyInstaller --onefile --console --name toast_notifier --noupx --hidden-import=windows_toasts --hidden-import=winsdk --distpath "${RELEASE_DIR}" --workpath "${ROOT}\.build" --specpath "${ROOT}\.build" $toast_notifier_py 2>&1 | Out-Null
+    
+    if (Test-Path $toast_notifier_exe) {
+        Write-Output "  ✓ toast_notifier.exe created: $(Get-Item $toast_notifier_exe | Select-Object -ExpandProperty Length) bytes"
+        return $true
+    }
+    else {
+        Write-Output "  ✗ Failed to create toast_notifier.exe"
+        return $false
+    }
+}
+
 function build_go_program() {
-    Write-Output "[3/4] Building Go program..."
+    Write-Output "[4/5] Building Go program..."
     & $ENV_GOAPTH/bin/rsrc.exe -manifest clipboard-online.manifest -ico app.ico -o rsrc.syso
     
     if ($mode -eq "debug") {
@@ -94,7 +121,7 @@ function build_release() {
 }
 
 function cleanup() {
-    Write-Output "[4/4] Cleaning up..."
+    Write-Output "[5/5] Cleaning up..."
     if (Test-Path "${ROOT}\.build") {
         Remove-Item "${ROOT}\.build" -Recurse -Force
     }
@@ -106,6 +133,9 @@ function cleanup() {
     }
     if (Test-Path "${ROOT}\heif_converter.exe") {
         Remove-Item "${ROOT}\heif_converter.exe" -Force
+    }
+    if (Test-Path "${ROOT}\toast_notifier.exe") {
+        Remove-Item "${ROOT}\toast_notifier.exe" -Force
     }
     Write-Output "  ✓ Cleaned up intermediate files"
 }
@@ -133,6 +163,15 @@ function verify_build() {
         Write-Output "⚠ heif_converter.exe: OPTIONAL (HEIF support disabled)"
     }
     
+    $toast_release = "${RELEASE_DIR}\toast_notifier.exe"
+    if (Test-Path $toast_release) {
+        $size = Get-Item $toast_release | Select-Object -ExpandProperty Length
+        Write-Output "✓ toast_notifier.exe: $size bytes"
+    }
+    else {
+        Write-Output "⚠ toast_notifier.exe: OPTIONAL (Toast notification disabled)"
+    }
+    
     Write-Output ""
     Write-Output "Release directory: $RELEASE_DIR"
     Write-Output "Ready to run: .\release\clipboard-online.exe"
@@ -149,9 +188,12 @@ function main() {
         New-Item -ItemType Directory -Path $RELEASE_DIR | Out-Null
     }
     
-    Write-Output "[2/4] Building HEIF converter..."
+    Write-Output "[2/5] Building HEIF converter..."
     if (check_python_env) {
         build_heif_converter | Out-Null
+        
+        Write-Output "[3/5] Building Toast notifier..."
+        build_toast_notifier | Out-Null
     }
     
     build_go_program

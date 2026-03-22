@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	_ "image/gif"
+	_ "image/jpeg"
 	"image/png"
 	"io/ioutil"
 	"net/http"
@@ -347,8 +348,17 @@ func setFileHandler(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-// setMediaHandler 处理媒体类型：解码图片并写入剪贴板为图片格式(CF_DIB)
+// setMediaHandler 处理媒体类型：先解码为图片写入剪贴板(CF_DIB)，同时保存文件备份
+// 然后弹出 Toast 通知询问用户是否需要以文件形式复制到剪贴板
 func setMediaHandler(c *gin.Context, body FileBody) {
+	// 收集所有文件信息：保存到临时目录，尝试解码为图片
+	type mediaFile struct {
+		path  string
+		name  string
+		image image.Image
+	}
+	files := make([]mediaFile, 0, len(body.Files))
+
 	for _, file := range body.Files {
 		if file.Name == "-" && file.Base64 == "-" {
 			continue
@@ -360,42 +370,65 @@ func setMediaHandler(c *gin.Context, body FileBody) {
 			continue
 		}
 
-		// 同时保存文件到临时目录备份
+		// 保存文件到临时目录
 		path := utils.LatestFilename(app.GetTempFilePath(file.Name))
 		if err := newFile(path, fileBytes); err != nil {
-			log.WithError(err).WithField("path", path).Warn("failed to save media file backup")
+			log.WithError(err).WithField("path", path).Warn("failed to save media file")
+			continue
 		}
 
+		// 尝试解码图片
 		img, err := decodeMediaImage(fileBytes, file.Name)
 		if err != nil {
-			log.WithError(err).WithField("filename", file.Name).Warn("failed to decode media image, falling back to file mode")
-			// 解码失败时回退到文件模式
-			paths := []string{path}
-			if err := utils.Clipboard().SetFiles(paths); err != nil {
-				log.WithError(err).Warn("failed to set clipboard files (fallback)")
-				c.Status(http.StatusBadRequest)
-				return
-			}
-			notify := "[文件] 已复制到剪贴板 (图片解码失败)"
-			defer sendPasteNotification(log, c.GetString("clientName"), notify)
-			c.Status(http.StatusOK)
-			return
+			log.WithError(err).WithField("filename", file.Name).Warn("failed to decode media image")
 		}
+		files = append(files, mediaFile{path: path, name: file.Name, image: img})
+	}
 
-		if err := utils.Clipboard().SetImage(img); err != nil {
-			log.WithError(err).Warn("failed to set clipboard image")
-			c.Status(http.StatusBadRequest)
-			return
-		}
-
-		notify := "[图片媒体] 已复制到剪贴板"
-		defer sendPasteNotification(log, c.GetString("clientName"), notify)
-		log.WithField("filename", file.Name).Info("set clipboard image")
-		c.Status(http.StatusOK)
+	if len(files) == 0 {
+		c.Status(http.StatusBadRequest)
 		return
 	}
 
-	c.Status(http.StatusBadRequest)
+	// 尝试将第一张成功解码的图片以 CF_DIB 格式写入剪贴板
+	imageSet := false
+	for _, mf := range files {
+		if mf.image != nil {
+			if err := utils.Clipboard().SetImage(mf.image); err != nil {
+				log.WithError(err).Warn("failed to set clipboard image")
+			} else {
+				imageSet = true
+				log.WithField("filename", mf.name).Info("set clipboard image (CF_DIB)")
+				break
+			}
+		}
+	}
+
+	// 如果没有图片能解码成功，回退到文件模式
+	if !imageSet {
+		paths := make([]string, 0, len(files))
+		for _, mf := range files {
+			paths = append(paths, mf.path)
+		}
+		if err := utils.Clipboard().SetFiles(paths); err != nil {
+			log.WithError(err).Warn("failed to set clipboard files (fallback)")
+			c.Status(http.StatusBadRequest)
+			return
+		}
+		log.WithField("paths", paths).Info("set clipboard files (image decode failed, fallback)")
+	}
+
+	c.Status(http.StatusOK)
+
+	// 收集文件路径信息，启动 goroutine 弹出 Toast 询问是否以文件形式复制
+	paths := make([]string, 0, len(files))
+	for _, mf := range files {
+		paths = append(paths, mf.path)
+	}
+
+	if imageSet {
+		go showToastAndSaveAsFile(paths)
+	}
 }
 
 func notFoundHandler(c *gin.Context) {
@@ -455,16 +488,85 @@ func cleanTempFiles() {
 	}
 }
 
-// decodeHEIFWithExtern 使用外部 heif_converter.exe 转换 HEIF 文件为 PNG
-// 创建临时输入/输出文件，调用 exe 进行转换，读取结果并用标准 PNG decoder 解码
+// showToastAndSaveAsFile 弹出 Toast 通知询问用户是否以文件形式复制到剪贴板
+// 用户选择"是"时，将文件写入剪贴板（HEIF 格式先转为 JPEG）
+func showToastAndSaveAsFile(allPaths []string) {
+	toastExePath := filepath.Join(execPath, "toast_notifier.exe")
+	if _, err := os.Stat(toastExePath); err != nil {
+		log.WithError(err).Warn("toast_notifier.exe not found, skipping notification")
+		return
+	}
+
+	cmd := exec.Command(toastExePath, "收到图片", "是否需要以文件形式复制？")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		// exit code != 0 表示用户选择"否"或超时
+		log.Info("user chose to keep image in clipboard")
+		return
+	}
+
+	// exit code 0: 用户选择以文件形式复制
+	log.Info("user chose to save as file")
+
+	newPaths := make([]string, len(allPaths))
+	copy(newPaths, allPaths)
+
+	// HEIF 文件先转换为 JPEG
+	for i, p := range newPaths {
+		ext := strings.ToLower(filepath.Ext(p))
+		if ext == ".heic" || ext == ".heif" {
+			jpegPath := strings.TrimSuffix(p, filepath.Ext(p)) + ".jpg"
+			if err := convertHEIFToJPEG(p, jpegPath); err != nil {
+				log.WithError(err).WithField("path", p).Warn("failed to convert HEIF to JPEG, using original")
+			} else {
+				newPaths[i] = jpegPath
+				log.WithField("jpeg", jpegPath).Info("converted HEIF to JPEG")
+			}
+		}
+	}
+
+	app.Synchronize(func() {
+		if err := utils.Clipboard().SetFiles(newPaths); err != nil {
+			log.WithError(err).Warn("failed to set clipboard files")
+		} else {
+			log.WithField("paths", newPaths).Info("clipboard updated with files")
+		}
+	})
+}
+
+// convertHEIFToJPEG 调用 heif_converter.exe 将 HEIF 文件转换为 JPEG
+func convertHEIFToJPEG(heifPath, jpegPath string) error {
+	heifExePath := filepath.Join(execPath, "heif_converter.exe")
+	if _, err := os.Stat(heifExePath); err != nil {
+		return fmt.Errorf("heif_converter.exe not found: %w", err)
+	}
+
+	cmd := exec.Command(heifExePath, heifPath, jpegPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		return fmt.Errorf("heif_converter.exe failed: %v: %s", err, errMsg)
+	}
+
+	return nil
+}
+
+// decodeHEIFWithExtern 使用外部 heif_converter.exe 将 HEIF 转为 JPEG 后解码
 func decodeHEIFWithExtern(fileBytes []byte, filename string) (image.Image, error) {
-	// 检查 exe 文件是否存在
 	heifExePath := filepath.Join(execPath, "heif_converter.exe")
 	if _, err := os.Stat(heifExePath); err != nil {
 		return nil, fmt.Errorf("heif_converter.exe not found: %w", err)
 	}
 
-	// 创建临时输入文件
 	tempDir := os.TempDir()
 	tempInputFile, err := ioutil.TempFile(tempDir, "heif_input_*.heif")
 	if err != nil {
@@ -473,101 +575,51 @@ func decodeHEIFWithExtern(fileBytes []byte, filename string) (image.Image, error
 	tempInputPath := tempInputFile.Name()
 	defer os.Remove(tempInputPath)
 
-	// 写入输入数据
 	if _, err := tempInputFile.Write(fileBytes); err != nil {
 		tempInputFile.Close()
 		return nil, fmt.Errorf("failed to write temp input file: %w", err)
 	}
 	tempInputFile.Close()
 
-	// 设置文件权限
-	if err := os.Chmod(tempInputPath, 0644); err != nil {
-		return nil, fmt.Errorf("failed to set input file permission: %w", err)
-	}
-
-	// 创建临时输出文件路径
-	tempOutputFile, err := ioutil.TempFile(tempDir, "heif_output_*.png")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp output file: %w", err)
-	}
-	tempOutputPath := tempOutputFile.Name()
-	tempOutputFile.Close()
+	tempOutputPath := tempInputPath + ".jpg"
 	defer os.Remove(tempOutputPath)
 
-	// 调用 heif_converter.exe 进行转换
 	cmd := exec.Command(heifExePath, tempInputPath, tempOutputPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
-	// 捕获 stderr 用于错误记录
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	// 执行转换
 	if err := cmd.Run(); err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
-		return nil, fmt.Errorf("heif_converter.exe failed (exit code %v): %s", err, errMsg)
+		return nil, fmt.Errorf("heif_converter.exe failed: %v: %s", err, errMsg)
 	}
 
-	// 读取转换后的 PNG 文件
-	pngBytes, err := ioutil.ReadFile(tempOutputPath)
+	jpgBytes, err := ioutil.ReadFile(tempOutputPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read converted PNG: %w", err)
+		return nil, fmt.Errorf("failed to read converted file: %w", err)
 	}
 
-	// 用标准 PNG decoder 解码
-	pngReader := bytes.NewReader(pngBytes)
-	img, err := png.Decode(pngReader)
+	img, _, err := image.Decode(bytes.NewReader(jpgBytes))
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode PNG from converter: %w", err)
+		return nil, fmt.Errorf("failed to decode converted image: %w", err)
 	}
 
 	return img, nil
 }
 
-// decodeStdImageSafe 使用标准解码器解码图片格式（PNG、JPEG、GIF、BMP）
-func decodeStdImageSafe(fileBytes []byte) (image.Image, error) {
-	imgReader := bytes.NewReader(fileBytes)
-	img, _, err := image.Decode(imgReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode standard image format: %w", err)
-	}
-	return img, nil
-}
-
-// decodeMediaImage 根据文件格式选择合适的解码器来解码图片
-// 对于 HEIF 格式，使用外部 exe 转换；其他格式使用标准解码器
+// decodeMediaImage 根据文件扩展名选择解码方式
+// HEIF → 外部转换器; 其他 → 标准 image.Decode
 func decodeMediaImage(fileBytes []byte, filename string) (image.Image, error) {
-	// 获取文件扩展名并转换为小写
 	ext := strings.ToLower(filepath.Ext(filename))
-	byteLength := len(fileBytes)
 
-	logger := log.WithFields(logrus.Fields{
-		"filename":   filename,
-		"ext":        ext,
-		"byteLength": byteLength,
-	})
-
-	// 检查是否为 HEIF 格式
 	if ext == ".heic" || ext == ".heif" {
-		logger.Info("attempting HEIF decoder via external converter (heif_converter.exe)")
-
-		img, err := decodeHEIFWithExtern(fileBytes, filename)
-		if err != nil {
-			logger.WithError(err).Error("✗ external HEIF converter failed")
-			return nil, err
-		}
-
-		logger.Info("✓ decoded by external HEIF converter")
-		return img, nil
+		return decodeHEIFWithExtern(fileBytes, filename)
 	}
 
-	// 非 HEIF 文件使用标准解码器
-	img, err := decodeStdImageSafe(fileBytes)
+	img, _, err := image.Decode(bytes.NewReader(fileBytes))
 	if err != nil {
-		logger.WithError(err).Error("failed to decode standard image format")
-		return nil, err
+		return nil, fmt.Errorf("failed to decode image: %w", err)
 	}
-
-	logger.Info("✓ decoded by standard image decoder")
 	return img, nil
 }
