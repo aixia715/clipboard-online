@@ -1,9 +1,11 @@
 package utils
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"reflect"
 	"syscall"
 	"unsafe"
@@ -11,6 +13,7 @@ import (
 	"github.com/lxn/walk"
 	"github.com/lxn/win"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/image/bmp"
 	"golang.org/x/sys/windows"
 )
 
@@ -295,6 +298,47 @@ func (c *ClipboardService) SetFiles(paths []string) error {
 			return lastError("SetClipboardData")
 		}
 		// The system now owns the memory referred to by hMem.
+
+		return nil
+	})
+}
+
+// SetImage sets the clipboard content to a CF_DIB image.
+// It encodes the image as BMP, strips the 14-byte BMP file header,
+// and writes the raw DIB data to the clipboard.
+func (c *ClipboardService) SetImage(img image.Image) error {
+	var buf bytes.Buffer
+	if err := bmp.Encode(&buf, img); err != nil {
+		return fmt.Errorf("bmp encode failed: %w", err)
+	}
+
+	bmpBytes := buf.Bytes()
+	// BMP file header is 14 bytes; DIB data starts after that
+	if len(bmpBytes) < 14 {
+		return errors.New("bmp data too short")
+	}
+	dibData := bmpBytes[14:]
+
+	return c.withOpenClipboard(func() error {
+		win.EmptyClipboard()
+
+		hMem := win.GlobalAlloc(win.GMEM_MOVEABLE, uintptr(len(dibData)))
+		if hMem == 0 {
+			return lastError("GlobalAlloc")
+		}
+
+		p := win.GlobalLock(hMem)
+		if p == nil {
+			return lastError("GlobalLock()")
+		}
+
+		win.MoveMemory(p, unsafe.Pointer(&dibData[0]), uintptr(len(dibData)))
+		win.GlobalUnlock(hMem)
+
+		if 0 == win.SetClipboardData(win.CF_DIB, win.HANDLE(hMem)) {
+			defer win.GlobalFree(hMem)
+			return lastError("SetClipboardData")
+		}
 
 		return nil
 	})

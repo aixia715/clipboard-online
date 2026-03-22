@@ -3,3 +3,11 @@ release
 clipboard-online.exe
 config.json
 log.txt
+bin/
+dist/
+heif_converter.exe
+heif_converter.spec
+test_input.heic
+test_output.jpg
+test_output.png
+.venv/

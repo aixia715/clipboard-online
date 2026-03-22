@@ -7,11 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"image"
+	_ "image/gif"
 	"image/png"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -301,6 +304,12 @@ func setFileHandler(c *gin.Context) {
 		return
 	}
 
+	// 对于media类型，尝试解码为图片并写入剪贴板为CF_DIB
+	if contentType == utils.TypeMedia {
+		setMediaHandler(c, body)
+		return
+	}
+
 	paths := make([]string, 0, len(body.Files))
 	for _, file := range body.Files {
 		if file.Name == "-" && file.Base64 == "-" {
@@ -320,10 +329,8 @@ func setFileHandler(c *gin.Context) {
 	}
 
 	if app.config.ReserveHistory {
-		// clean paths in _filename.txt
 		setLastFilenames(nil)
 	} else {
-		// write paths to file
 		setLastFilenames(paths)
 	}
 
@@ -333,16 +340,61 @@ func setFileHandler(c *gin.Context) {
 		return
 	}
 
-	var notify string
-	if contentType == utils.TypeMedia {
-		notify = "[图片媒体] 已复制到剪贴板"
-	} else {
-		notify = "[文件] 已复制到剪贴板"
-	}
-
+	notify := "[文件] 已复制到剪贴板"
 	defer sendPasteNotification(log, c.GetString("clientName"), notify)
 	log.WithField("paths", paths).Info("set clipboard file")
 	c.Status(http.StatusOK)
+}
+
+// setMediaHandler 处理媒体类型：解码图片并写入剪贴板为图片格式(CF_DIB)
+func setMediaHandler(c *gin.Context, body FileBody) {
+	for _, file := range body.Files {
+		if file.Name == "-" && file.Base64 == "-" {
+			continue
+		}
+
+		fileBytes, err := file.Bytes()
+		if err != nil {
+			log.WithField("filename", file.Name).Warn("failed to read media file bytes")
+			continue
+		}
+
+		// 同时保存文件到临时目录备份
+		path := utils.LatestFilename(app.GetTempFilePath(file.Name))
+		if err := newFile(path, fileBytes); err != nil {
+			log.WithError(err).WithField("path", path).Warn("failed to save media file backup")
+		}
+
+		img, err := decodeMediaImage(fileBytes, file.Name)
+		if err != nil {
+			log.WithError(err).WithField("filename", file.Name).Warn("failed to decode media image, falling back to file mode")
+			// 解码失败时回退到文件模式
+			paths := []string{path}
+			if err := utils.Clipboard().SetFiles(paths); err != nil {
+				log.WithError(err).Warn("failed to set clipboard files (fallback)")
+				c.Status(http.StatusBadRequest)
+				return
+			}
+			notify := "[文件] 已复制到剪贴板 (图片解码失败)"
+			defer sendPasteNotification(log, c.GetString("clientName"), notify)
+			c.Status(http.StatusOK)
+			return
+		}
+
+		if err := utils.Clipboard().SetImage(img); err != nil {
+			log.WithError(err).Warn("failed to set clipboard image")
+			c.Status(http.StatusBadRequest)
+			return
+		}
+
+		notify := "[图片媒体] 已复制到剪贴板"
+		defer sendPasteNotification(log, c.GetString("clientName"), notify)
+		log.WithField("filename", file.Name).Info("set clipboard image")
+		c.Status(http.StatusOK)
+		return
+	}
+
+	c.Status(http.StatusBadRequest)
 }
 
 func notFoundHandler(c *gin.Context) {
@@ -400,4 +452,120 @@ func cleanTempFiles() {
 			}
 		}
 	}
+}
+
+// decodeHEIFWithExtern 使用外部 heif_converter.exe 转换 HEIF 文件为 PNG
+// 创建临时输入/输出文件，调用 exe 进行转换，读取结果并用标准 PNG decoder 解码
+func decodeHEIFWithExtern(fileBytes []byte, filename string) (image.Image, error) {
+	// 检查 exe 文件是否存在
+	heifExePath := filepath.Join(execPath, "heif_converter.exe")
+	if _, err := os.Stat(heifExePath); err != nil {
+		return nil, fmt.Errorf("heif_converter.exe not found: %w", err)
+	}
+
+	// 创建临时输入文件
+	tempDir := os.TempDir()
+	tempInputFile, err := ioutil.TempFile(tempDir, "heif_input_*.heif")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp input file: %w", err)
+	}
+	tempInputPath := tempInputFile.Name()
+	defer os.Remove(tempInputPath)
+
+	// 写入输入数据
+	if _, err := tempInputFile.Write(fileBytes); err != nil {
+		tempInputFile.Close()
+		return nil, fmt.Errorf("failed to write temp input file: %w", err)
+	}
+	tempInputFile.Close()
+
+	// 设置文件权限
+	if err := os.Chmod(tempInputPath, 0644); err != nil {
+		return nil, fmt.Errorf("failed to set input file permission: %w", err)
+	}
+
+	// 创建临时输出文件路径
+	tempOutputFile, err := ioutil.TempFile(tempDir, "heif_output_*.png")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp output file: %w", err)
+	}
+	tempOutputPath := tempOutputFile.Name()
+	tempOutputFile.Close()
+	defer os.Remove(tempOutputPath)
+
+	// 调用 heif_converter.exe 进行转换
+	cmd := exec.Command(heifExePath, tempInputPath, tempOutputPath)
+
+	// 捕获 stderr 用于错误记录
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	// 执行转换
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		return nil, fmt.Errorf("heif_converter.exe failed (exit code %v): %s", err, errMsg)
+	}
+
+	// 读取转换后的 PNG 文件
+	pngBytes, err := ioutil.ReadFile(tempOutputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read converted PNG: %w", err)
+	}
+
+	// 用标准 PNG decoder 解码
+	pngReader := bytes.NewReader(pngBytes)
+	img, err := png.Decode(pngReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode PNG from converter: %w", err)
+	}
+
+	return img, nil
+}
+
+// decodeStdImageSafe 使用标准解码器解码图片格式（PNG、JPEG、GIF、BMP）
+func decodeStdImageSafe(fileBytes []byte) (image.Image, error) {
+	imgReader := bytes.NewReader(fileBytes)
+	img, _, err := image.Decode(imgReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode standard image format: %w", err)
+	}
+	return img, nil
+}
+
+// decodeMediaImage 根据文件格式选择合适的解码器来解码图片
+// 对于 HEIF 格式，使用外部 exe 转换；其他格式使用标准解码器
+func decodeMediaImage(fileBytes []byte, filename string) (image.Image, error) {
+	// 获取文件扩展名并转换为小写
+	ext := strings.ToLower(filepath.Ext(filename))
+	byteLength := len(fileBytes)
+
+	logger := log.WithFields(logrus.Fields{
+		"filename":   filename,
+		"ext":        ext,
+		"byteLength": byteLength,
+	})
+
+	// 检查是否为 HEIF 格式
+	if ext == ".heic" || ext == ".heif" {
+		logger.Info("attempting HEIF decoder via external converter (heif_converter.exe)")
+
+		img, err := decodeHEIFWithExtern(fileBytes, filename)
+		if err != nil {
+			logger.WithError(err).Error("✗ external HEIF converter failed")
+			return nil, err
+		}
+
+		logger.Info("✓ decoded by external HEIF converter")
+		return img, nil
+	}
+
+	// 非 HEIF 文件使用标准解码器
+	img, err := decodeStdImageSafe(fileBytes)
+	if err != nil {
+		logger.WithError(err).Error("failed to decode standard image format")
+		return nil, err
+	}
+
+	logger.Info("✓ decoded by standard image decoder")
+	return img, nil
 }
