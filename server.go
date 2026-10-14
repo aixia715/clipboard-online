@@ -20,14 +20,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/YanxinTang/clipboard-online/utils"
 	"github.com/gin-gonic/gin"
-	"github.com/lxn/walk"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/image/bmp"
 )
 
 const (
@@ -138,7 +135,7 @@ func getHandler(c *gin.Context) {
 	}
 
 	if contentType == utils.TypeText {
-		str, err := walk.Clipboard().Text()
+		str, err := utils.Clipboard().Text()
 		if err != nil {
 			c.Status(http.StatusBadRequest)
 			log.WithError(err).Warn("failed to get clipboard")
@@ -154,24 +151,16 @@ func getHandler(c *gin.Context) {
 	}
 
 	if contentType == utils.TypeBitmap {
-		bmpBytes, err := utils.Clipboard().Bitmap()
+		img, err := utils.Clipboard().Image()
 		if err != nil {
-			log.WithError(err).Warn("failed to get bmp bytes from clipboard")
-		}
-
-		bmpBytesReader := bytes.NewReader(bmpBytes)
-		bmpImage, err := bmp.Decode(bmpBytesReader)
-		if err != nil {
-			log.WithError(err).Warn("failed to decode bmp")
+			log.WithError(err).Warn("failed to get image from clipboard")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "无法获取剪切板内容"})
 			return
 		}
-		pngBytesBuffer := new(bytes.Buffer)
-		if err = png.Encode(pngBytesBuffer, bmpImage); err != nil {
-			log.WithError(err).Warn("failed to encode bmp as png")
-		}
 
-		if err != nil {
+		pngBytesBuffer := new(bytes.Buffer)
+		if err := png.Encode(pngBytesBuffer, img); err != nil {
+			log.WithError(err).Warn("failed to encode image as png")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "无法获取剪切板内容"})
 			return
 		}
@@ -463,7 +452,7 @@ func sendNotification(logger *logrus.Logger, action, client, notify string) {
 		notify = action + "内容为空"
 	}
 	title := fmt.Sprintf("%s自 %s", action, client)
-	if err := app.ni.ShowInfo(title, notify); err != nil {
+	if err := utils.Notify(title, notify); err != nil {
 		logger.WithError(err).WithField("notify", notify).Warn("failed to send notification")
 	}
 }
@@ -504,54 +493,41 @@ func extractFirstURL(text string) string {
 	return urlPattern.FindString(text)
 }
 
-// showToastAndOpenURL 弹出 Toast 通知询问用户是否打开链接
+// showToastAndOpenURL 弹出通知询问用户是否打开链接
 func showToastAndOpenURL(link string) {
-	toastExePath := filepath.Join(execPath, "toast_notifier.exe")
-	if _, err := os.Stat(toastExePath); err != nil {
-		log.WithError(err).Warn("toast_notifier.exe not found, skipping link notification")
+	action, err := utils.NotifyWithAction("文本包含链接", fmt.Sprintf("检测到链接: %s\n是否跳转？", link),
+		[]utils.NotifyAction{{Key: "open", Label: "打开"}, {Key: "ignore", Label: "忽略"}}, 30000)
+	if err != nil {
+		log.WithError(err).WithField("link", link).Warn("failed to send link notification")
 		return
 	}
 
-	message := fmt.Sprintf("检测到链接: %s\n是否跳转？", link)
-	cmd := exec.Command(toastExePath, "文本包含链接", message)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-
-	if err := cmd.Run(); err != nil {
+	if action != "open" {
 		log.Info("user chose not to open URL")
 		return
 	}
 
-	// 用户选择"是"，打开链接
-	openCmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", link)
-	openCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if err := openCmd.Start(); err != nil {
+	if err := exec.Command("xdg-open", link).Start(); err != nil {
 		log.WithError(err).WithField("link", link).Warn("failed to open URL")
 	}
 }
 
-// showToastAndSaveAsFile 弹出 Toast 通知询问用户是否以文件形式复制到剪贴板
+// showToastAndSaveAsFile 弹出通知询问用户是否以文件形式复制到剪贴板
 // 用户选择"是"时，将文件写入剪贴板（HEIF 格式先转为 JPEG）
 func showToastAndSaveAsFile(allPaths []string) {
-	toastExePath := filepath.Join(execPath, "toast_notifier.exe")
-	if _, err := os.Stat(toastExePath); err != nil {
-		log.WithError(err).Warn("toast_notifier.exe not found, skipping notification")
+	action, err := utils.NotifyWithAction("收到图片", "是否需要以文件形式复制？",
+		[]utils.NotifyAction{{Key: "convert", Label: "是"}, {Key: "keep", Label: "否"}}, 30000)
+	if err != nil {
+		log.WithError(err).Warn("failed to send save-as-file notification")
 		return
 	}
 
-	cmd := exec.Command(toastExePath, "收到图片", "是否需要以文件形式复制？")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		// exit code != 0 表示用户选择"否"或超时
+	if action != "convert" {
 		log.Info("user chose to keep image in clipboard")
 		return
 	}
 
-	// exit code 0: 用户选择以文件形式复制
+	// 用户选择以文件形式复制
 	log.Info("user chose to save as file")
 
 	newPaths := make([]string, len(allPaths))
@@ -571,41 +547,36 @@ func showToastAndSaveAsFile(allPaths []string) {
 		}
 	}
 
-	app.Synchronize(func() {
-		if err := utils.Clipboard().SetFiles(newPaths); err != nil {
-			log.WithError(err).Warn("failed to set clipboard files")
-		} else {
-			log.WithField("paths", newPaths).Info("clipboard updated with files")
-		}
-	})
+	if err := utils.Clipboard().SetFiles(newPaths); err != nil {
+		log.WithError(err).Warn("failed to set clipboard files")
+	} else {
+		log.WithField("paths", newPaths).Info("clipboard updated with files")
+	}
 }
 
-// convertHEIFToJPEG 调用 heif_converter.exe 将 HEIF 文件转换为 JPEG
+// convertHEIFToJPEG 调用 heif-convert 将 HEIF 文件转换为 JPEG
 func convertHEIFToJPEG(heifPath, jpegPath string) error {
-	heifExePath := filepath.Join(execPath, "heif_converter.exe")
-	if _, err := os.Stat(heifExePath); err != nil {
-		return fmt.Errorf("heif_converter.exe not found: %w", err)
+	if _, err := exec.LookPath("heif-convert"); err != nil {
+		return fmt.Errorf("未找到 heif-convert，请安装：sudo pacman -S libheif: %w", err)
 	}
 
-	cmd := exec.Command(heifExePath, heifPath, jpegPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd := exec.Command("heif-convert", heifPath, jpegPath)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
-		return fmt.Errorf("heif_converter.exe failed: %v: %s", err, errMsg)
+		return fmt.Errorf("heif-convert failed: %v: %s", err, errMsg)
 	}
 
 	return nil
 }
 
-// decodeHEIFWithExtern 使用外部 heif_converter.exe 将 HEIF 转为 JPEG 后解码
+// decodeHEIFWithExtern 使用外部 heif-convert 将 HEIF 转为 JPEG 后解码
 func decodeHEIFWithExtern(fileBytes []byte, filename string) (image.Image, error) {
-	heifExePath := filepath.Join(execPath, "heif_converter.exe")
-	if _, err := os.Stat(heifExePath); err != nil {
-		return nil, fmt.Errorf("heif_converter.exe not found: %w", err)
+	if _, err := exec.LookPath("heif-convert"); err != nil {
+		return nil, fmt.Errorf("未找到 heif-convert，请安装：sudo pacman -S libheif: %w", err)
 	}
 
 	tempDir := os.TempDir()
@@ -625,15 +596,14 @@ func decodeHEIFWithExtern(fileBytes []byte, filename string) (image.Image, error
 	tempOutputPath := tempInputPath + ".jpg"
 	defer os.Remove(tempOutputPath)
 
-	cmd := exec.Command(heifExePath, tempInputPath, tempOutputPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd := exec.Command("heif-convert", tempInputPath, tempOutputPath)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
-		return nil, fmt.Errorf("heif_converter.exe failed: %v: %s", err, errMsg)
+		return nil, fmt.Errorf("heif-convert failed: %v: %s", err, errMsg)
 	}
 
 	jpgBytes, err := ioutil.ReadFile(tempOutputPath)

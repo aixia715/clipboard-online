@@ -5,7 +5,7 @@
 
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/YanxinTang/clipboard-online)
 
-clipboard-online is an application to share cilpboard text between Windows and iOS
+clipboard-online is an application to share clipboard between 💻Linux (KDE desktop) and 📱iOS/Android
 
 ## Documentation
 
@@ -13,27 +13,29 @@ clipboard-online is an application to share cilpboard text between Windows and i
 
 ## Download
 
-1. Directly download
+Only build from source is supported now.
 
-    You can download latest release exe from [here](https://github.com/YanxinTang/clipboard-online/releases)
+Before you build, make sure you have installed:
 
-2. From source code(only windows now)
+- golang (>= 1.21). If not, maybe you need [this](https://golang.org/dl/)
+- a KDE Plasma desktop session (both Wayland and X11 sessions are supported)
+- clipboard tools: `sudo pacman -S wl-clipboard xclip` (`wl-clipboard` is used in Wayland sessions, `xclip` in X11 sessions)
+- optional: `sudo pacman -S libheif` to enable HEIC photo decoding
 
-    Before you build, make sure you have installed golang. If not, maybe you need [this](https://golang.org/dl/)
+Build steps:
 
-    - `git clone git@github.com:YanxinTang/clipboard-online.git`
-    - `cd clipboard-online`
-    - `go get github.com/akavel/rsrc`
-    - Build
-      - Bash: `./build.sh`
-      - PowerShell：`.\build.ps1`
-    - You can find release bin at `release` directory
+- `git clone git@github.com:YanxinTang/clipboard-online.git`
+- `cd clipboard-online`
+- `./build.sh`
+- You can find the release binary at `release` directory (`release/clipboard-online`)
 
 ## Usage
 
+The KDE system tray stores visibility preferences under the stable ID `clipboard-online`. When upgrading from a version that used `systray_<PID>`, restart the application and set `Configure System Tray` → `clipboard-online` → `Show only in popup` once more; subsequent restarts retain that preference.
+
 ### For iOS users
 
-1. Run `clipboard-online` on your windows
+1. Run `clipboard-online` on your computer (the tray icon may be hidden in the collapsed area of the system tray)
 2. Setup shortcuts on you iPhone/iPad (Open link from safari)
     - Copy:
       - iCloud: [https://www.icloud.com/shortcuts/f463a1e431c94c60b8a5c65305eb819f](https://www.icloud.com/shortcuts/f463a1e431c94c60b8a5c65305eb819f)
@@ -54,7 +56,7 @@ Thanks for the hard working by [@xiozf](https://github.com/xiozf), [@Befod](http
 
 ## Configuration
 
-`clipboard-online.exe` will create two file which are `config.json` and `log.txt` in the execute path when first running
+`clipboard-online` will create two file which are `config.json` and `log.txt` in the execute path when first running
 
 You can make customization by editing `config.json`
 

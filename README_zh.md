@@ -5,7 +5,7 @@
 
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/YanxinTang/clipboard-online)
 
-clipboard-online 是一款可以帮你在 💻Windows 和 📱iOS 之间分享剪切板的应用
+clipboard-online 是一款可以帮你在 💻Linux（KDE 桌面）和 📱iOS/Android 之间分享剪切板的应用
 
 ## 文档
 
@@ -13,27 +13,29 @@ clipboard-online 是一款可以帮你在 💻Windows 和 📱iOS 之间分享�
 
 ## 下载
 
-1. 直接下载
+目前仅支持源码编译。
 
-    在[这里](https://github.com/YanxinTang/clipboard-online/releases)下载发布的 .exe 文件
+构建之前，请确保你已经安装：
 
-2. 源码编译(只在 Windows 下可用，其他平台未知)
+- golang（≥ 1.21）。如果没有，可能你需要[这个](https://golang.org/dl/)
+- KDE Plasma 桌面会话（Wayland 与 X11 会话均支持）
+- 剪贴板工具：`sudo pacman -S wl-clipboard xclip`（Wayland 会话使用 wl-clipboard，X11 会话使用 xclip）
+- 可选：`sudo pacman -S libheif` 启用 HEIC 照片解码
 
-    构建之前，请确保你已经安装了 golang. 如果没有，可能你需要[这个](https://golang.org/dl/)
+构建步骤：
 
-    - `git clone git@github.com:YanxinTang/clipboard-online.git`
-    - `cd clipboard-online`
-    - `go get github.com/akavel/rsrc`
-    - 构建
-      - Bash: `./build.sh`
-      - PowerShell：`.\build.ps1`
-    - 你可以在 `release` 目录下找到可执行文件
+- `git clone git@github.com:YanxinTang/clipboard-online.git`
+- `cd clipboard-online`
+- `./build.sh`
+- 你可以在 `release` 目录下找到可执行文件（`release/clipboard-online`）
 
 ## 使用
 
+KDE 系统托盘使用固定标识 `clipboard-online` 保存显示偏好。若从使用 `systray_<PID>` 标识的旧版本升级，请在重启应用后重新设置一次 `Configure System Tray` → `clipboard-online` → `Show only in popup`；后续重启会沿用该设置。
+
 ### iOS 用户
 
-1. 在 Windows 上运行 `clipboard-online`
+1. 在电脑上运行 `clipboard-online`（托盘图标可能收纳在系统托盘的折叠区）
 2. iPhone 或 iPad 上安装快捷指令 （在 safari 中打开链接）
     - Copy:
       - iCloud: [https://www.icloud.com/shortcuts/f463a1e431c94c60b8a5c65305eb819f](https://www.icloud.com/shortcuts/f463a1e431c94c60b8a5c65305eb819f)
@@ -55,7 +57,7 @@ clipboard-online 是一款可以帮你在 💻Windows 和 📱iOS 之间分享�
 
 ## 配置
 
-`clipboard-online.exe` 将在运行路径下面创建两个文件： `config.json` and `log.txt`
+`clipboard-online` 将在运行路径下面创建两个文件： `config.json` and `log.txt`
 
 你可以通过修改 `config.json` 来自定义配置
 

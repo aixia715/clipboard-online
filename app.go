@@ -5,15 +5,14 @@ import (
 	"path/filepath"
 	"sync"
 
+	"fyne.io/systray"
+	"github.com/YanxinTang/clipboard-online/utils"
 	"github.com/gin-gonic/gin"
-	"github.com/lxn/walk"
 )
 
 type Application struct {
 	config *Config
-	*walk.MainWindow
-	ni *walk.NotifyIcon
-	wg sync.WaitGroup
+	wg     sync.WaitGroup
 }
 
 func (app *Application) RunHTTPServer() {
@@ -22,10 +21,8 @@ func (app *Application) RunHTTPServer() {
 		engin := gin.New()
 		setupRoute(engin)
 		if err := engin.Run(":" + app.config.Port); err != nil {
-			app.ni.ShowError("HTTP Server 启动失败", "您的应用可能不能正常运行")
-			app.Synchronize(func() {
-				walk.App().Exit(1)
-			})
+			utils.NotifyError("HTTP Server 启动失败", "端口 "+app.config.Port+" 可能被占用")
+			systray.Quit()
 			log.WithError(err).Error("failed to start http server")
 			return
 		}
@@ -38,16 +35,6 @@ func (app *Application) StopHTTPServer() {
 
 func (app *Application) BeforeExit() {
 	app.StopHTTPServer()
-	app.ni.Dispose()
-}
-
-func (app *Application) AddActions(actions ...*walk.Action) error {
-	for _, action := range actions {
-		if err := app.ni.ContextMenu().Actions().Add(action); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (app *Application) GetTempFilePath(filename string) string {
@@ -59,19 +46,8 @@ func (app *Application) GetTempFilePath(filename string) string {
 	return filepath.Join(app.config.TempDir, filename)
 }
 
-func NewApplication(config *Config) (*Application, error) {
+func NewApplication(config *Config) *Application {
 	app := new(Application)
-	var err error
 	app.config = config
-	app.MainWindow, err = walk.NewMainWindow()
-	if err != nil {
-		return nil, err
-	}
-
-	app.ni, err = walk.NewNotifyIcon(app.MainWindow)
-	if err != nil {
-		return nil, err
-	}
-
-	return app, nil
+	return app
 }

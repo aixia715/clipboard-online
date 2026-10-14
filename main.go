@@ -1,32 +1,31 @@
-// Copyright 2011 The Walk Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package main
 
 import (
+	_ "embed"
 	"os"
 	"path/filepath"
+
+	"fyne.io/systray"
 
 	"github.com/YanxinTang/clipboard-online/action"
 	"github.com/YanxinTang/clipboard-online/utils"
 	"github.com/gin-gonic/gin"
-	"github.com/lxn/walk"
 	"github.com/sirupsen/logrus"
 )
+
+//go:embed images/clipboard-icon.png
+var trayIcon []byte
 
 var app *Application
 
 var execPath string
-var execFullPath string
 var config *Config
 var mode string = "debug"
 var version string = ""
 var log = logrus.New()
 
 func init() {
-	execFullPath = os.Args[0]
-	execPath = filepath.Dir(execFullPath)
+	execPath = filepath.Dir(os.Args[0])
 
 	var err error
 	configFilePath := filepath.Join(execPath, ConfigFile)
@@ -40,7 +39,7 @@ func init() {
 		log.SetFormatter(&logrus.TextFormatter{ForceColors: true})
 	} else {
 		logFilePath := filepath.Join(execPath, LogFile)
-		f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_APPEND, 0644)
+		f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			log.WithError(err).Fatal("failed to open log file")
 		}
@@ -50,49 +49,27 @@ func init() {
 }
 
 func main() {
-	var err error
-
-	app, err = NewApplication(config)
-	if err != nil {
-		log.WithError(err).Fatal("failed to create applicaton")
-	}
+	app = NewApplication(config)
 	defer app.BeforeExit()
 
 	if err := utils.CreateDirectory(app.GetTempFilePath("")); err != nil {
 		log.WithError(err).Fatal("failed to create temp directory")
 	}
 
-	icon, err := walk.NewIconFromResourceId(2)
-	if err != nil {
-		log.WithError(err).Fatal("failed to get icon")
-	}
-
-	if err := app.ni.SetIcon(icon); err != nil {
-		log.WithError(err).Fatal("failed to set icon")
-	}
-
-	if err := app.ni.SetToolTip("clipboard-online " + version + " :" + config.Port); err != nil {
-		log.WithError(err).Fatal("failed to set tooltip")
-	}
-
-	autoRunAction, err := action.NewAutoRunAction()
-	if err != nil {
-		log.WithError(err).Fatal("failed to create AutoRunAction")
-	}
-	exitAction, err := action.NewExitAction()
-	if err != nil {
-		log.WithError(err).Fatal("failed to create ExitAction")
-	}
-	if err := app.AddActions(autoRunAction, exitAction); err != nil {
-		log.WithError(err).Fatal("failed to add action")
-	}
-
-	if err := app.ni.SetVisible(true); err != nil {
-		log.WithError(err).Fatal("failed to set notify visible")
-	}
-
 	log.Debug("start http server")
 	app.RunHTTPServer()
 	log.Debug("start app")
-	app.Run()
+	// Linux uses the title as the tray ID; set it before registration so KDE can persist visibility.
+	systray.SetTitle("clipboard-online")
+	systray.Run(onReady, func() {})
+}
+
+func onReady() {
+	systray.SetIcon(trayIcon)
+	systray.SetTooltip("clipboard-online")
+	if _, err := action.NewAutoRunMenuItem(); err != nil {
+		log.WithError(err).Warn("failed to create auto run menu item")
+	}
+	systray.AddSeparator()
+	action.NewExitMenuItem()
 }
